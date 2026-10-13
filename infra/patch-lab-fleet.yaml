@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Patch Manager lab fleet - 2 Linux + 2 Windows EC2 instances managed by AWS Systems Manager.
+  No inbound ports (no SSH/RDP); access is via SSM only. IMDSv2 enforced.
+  AMIs are intentionally pinned to older images (us-east-1) so there are real patches to install.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into (the default VPC works).
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet (auto-assign public IP) so the SSM Agent can reach Systems Manager.
+  AmazonLinuxAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  UbuntuAmi:
+    Type: AWS::EC2::Image::Id
+    Description: Ubuntu 24.04 (2026-04-09) - older on purpose so the scan finds missing patches.
+    Default: ami-009d9173b44d0482b
+  WindowsAmi:
+    Type: AWS::EC2::Image::Id
+    Description: Windows Server 2022 Base (2026-06-10) - older on purpose so the scan finds missing patches.
+    Default: ami-0ab5e8edee718de14
+  LinuxInstanceType:
+    Type: String
+    Default: t3.micro
+  WindowsInstanceType:
+    Type: String
+    Default: t3.medium
+
+Resources:
+  SsmInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: PatchLab-SSMInstanceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  SsmInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: PatchLab-SSMInstanceProfile
+      Roles: [!Ref SsmInstanceRole]
+
+  NoInboundSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Patch lab - no inbound, HTTPS outbound to AWS endpoints and OS update repos
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: SSM + HTTPS repos }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: HTTP repos (Ubuntu apt) }
+      Tags: [{ Key: Name, Value: patch-lab-no-inbound }]
+
+  HardenedLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: patch-lab-imdsv2
+      LaunchTemplateData:
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+
+  LinuxAl2023:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmazonLinuxAmi
+      InstanceType: !Ref LinuxInstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref NoInboundSecurityGroup]
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      LaunchTemplate:
+        LaunchTemplateId: !Ref HardenedLaunchTemplate
+        Version: !GetAtt HardenedLaunchTemplate.LatestVersionNumber
+      Tags:
+        - { Key: Name, Value: lab-linux-al2023 }
+        - { Key: Project, Value: patch-manager-lab }
+
+  LinuxUbuntu:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmi
+      InstanceType: !Ref LinuxInstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref NoInboundSecurityGroup]
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      LaunchTemplate:
+        LaunchTemplateId: !Ref HardenedLaunchTemplate
+        Version: !GetAtt HardenedLaunchTemplate.LatestVersionNumber
+      Tags:
+        - { Key: Name, Value: lab-linux-ubuntu }
+        - { Key: Project, Value: patch-manager-lab }
+
+  WindowsProd1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref WindowsAmi
+      InstanceType: !Ref WindowsInstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref NoInboundSecurityGroup]
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      LaunchTemplate:
+        LaunchTemplateId: !Ref HardenedLaunchTemplate
+        Version: !GetAtt HardenedLaunchTemplate.LatestVersionNumber
+      Tags:
+        - { Key: Name, Value: lab-win-1 }
+        - { Key: Project, Value: patch-manager-lab }
+
+  WindowsProd2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref WindowsAmi
+      InstanceType: !Ref WindowsInstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref NoInboundSecurityGroup]
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      LaunchTemplate:
+        LaunchTemplateId: !Ref HardenedLaunchTemplate
+        Version: !GetAtt HardenedLaunchTemplate.LatestVersionNumber
+      Tags:
+        - { Key: Name, Value: lab-win-2 }
+        - { Key: Project, Value: patch-manager-lab }
+
+Outputs:
+  InstanceIds:
+    Value: !Join [', ', [!Ref LinuxAl2023, !Ref LinuxUbuntu, !Ref WindowsProd1, !Ref WindowsProd2]]
+  SecurityGroup:
+    Value: !Ref NoInboundSecurityGroup
